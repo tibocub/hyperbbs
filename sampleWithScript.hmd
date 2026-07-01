@@ -1,0 +1,26 @@
+# Script Test
+
+:::panel{id=output}
+*Waiting...*
+:::
+
+::button{id=trigger label="Run"}
+
+:::script
+console.log('script started')
+
+const output = hypersite.getElementById('output')
+const trigger = hypersite.getElementById('trigger')
+
+trigger.on('press', async () => {
+  console.log('button pressed, querying db...')
+  const results = await db.query().match('post:*').in('posts').exec()
+  console.log('query returned', results.length, 'results')
+  output.setData(results.length > 0
+    ? results.map(r => r.key)
+    : ['(no posts yet — db is stubbed)']
+  )
+})
+
+console.log('script finished setup, waiting for interactions')
+:::

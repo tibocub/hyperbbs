@@ -1,0 +1,72 @@
+
+# Welcome to My Hypersite
+
+Normal **bold** and _italic_ markdown works as expected. Inline `code` too.
+
+This is a paragraph with :color[colored text]{fg=teal} inline, and a [link](hyper://abc123).
+
+---
+
+::bigtext[HYPER-BBS]{font=block position=center}
+
+::marquee[Latest: nothing posted yet. Be the first.]{speed=1 fg=amber}
+
+## Guestbook
+
+:::panel{id=guestbook border=rounded}
+
+Leave your name below.
+
+:::form{id=guest-form}
+::input{id=username type=text placeholder="Your name" maxlength=32}
+::button{id=submit label="Post"}
+:::
+
+:::panel{id=post-list}
+*No posts yet.*
+:::
+
+:::
+
+## Code example
+
+```js
+const x = 42
+console.log(x)
+```
+
+## A list
+
+- First item
+- Second item
+- Third item with **bold**
+
+:::style
+{
+  "ContainerPanel": { "borderStyle": "rounded" },
+  "#guestbook": { "fg": "teal", "padding": 1 },
+  "ButtonNode": { "fg": "amber", "bold": true },
+  "MarqueeNode": { "speed": 2 }
+}
+:::
+
+:::script
+const list = hypersite.getElementById('post-list')
+const input = hypersite.getElementById('username')
+const btn = hypersite.getElementById('submit')
+
+async function loadPosts() {
+  const posts = await db.query().match('guest:*').in('guestbook').exec()
+  list.setData(posts.map(p => p.value.name))
+}
+
+btn.on('press', async () => {
+  const name = input.value.trim()
+  if (!name) return
+  await db.put('guest:' + Date.now(), { name }, 'guestbook')
+  input.clear()
+  await loadPosts()
+})
+
+await loadPosts()
+:::

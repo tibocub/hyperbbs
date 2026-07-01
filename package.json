@@ -1,0 +1,18 @@
+{
+  "name": "hyperbbs",
+  "version": "0.1.0",
+  "description": "P2P terminal browser prototype. Renders HyperMD hypersites via OpenTUI. Early-stage research playground, not production software.",
+  "type": "module",
+  "scripts": {
+    "render": "bun run src/main.js"
+  },
+  "keywords": ["hyperbbs", "opentui", "terminal", "p2p", "hypermd"],
+  "license": "ISC",
+  "dependencies": {
+    "@opentui/core": "^0.4.2",
+		"hypermd": ">=0.0.1"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}
