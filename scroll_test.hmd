@@ -1,0 +1,81 @@
+# Scroll Test
+
+This page is intentionally long to test the scroll viewport.
+Use the **scroll wheel**, **arrow keys**, or **PgUp / PgDn** to navigate.
+
+---
+
+## Section 1
+
+Lorem ipsum dolor sit amet. This is the first section of a deliberately long
+document. The scrollbar should appear on the right side only when the content
+overflows the terminal height.
+
+- Item one with some descriptive text
+- Item two with some descriptive text
+- Item three with some descriptive text
+
+## Section 2
+
+::bigtext[SCROLL]{font=tiny}
+
+More content below the bigtext element. This should all be reachable
+by scrolling down.
+
+:::panel{id=panel-a border=rounded}
+This is a panel in the middle of the page.
+
+::button{id=btn-a label="Click me"}
+:::
+
+## Section 3
+
+A code block that would otherwise push things off screen:
+
+```js
+function fibonacci(n) {
+  if (n <= 1) return n
+  return fibonacci(n - 1) + fibonacci(n - 2)
+}
+
+for (let i = 0; i < 10; i++) {
+  console.log(fibonacci(i))
+}
+```
+
+## Section 4
+
+:::panel{id=output border=rounded}
+Waiting for button click...
+:::
+
+## Section 5
+
+More text to ensure the document is definitely taller than the terminal.
+The scroll position should persist while the script runs.
+
+- Alpha
+- Beta
+- Gamma
+- Delta
+- Epsilon
+
+## Section 6
+
+::marquee[You scrolled all the way down! Great work.]{speed=1 fg=teal}
+
+---
+
+*End of scroll test document.*
+
+:::script
+const btnA = hypersite.getElementById('btn-a')
+const output = hypersite.getElementById('output')
+let clicks = 0
+
+btnA.on('press', () => {
+  clicks++
+  output.setText('Button clicked ' + clicks + ' time(s) — scroll position preserved!')
+  console.log('click', clicks)
+})
+:::

@@ -127,13 +127,17 @@ function buildHypersiteApi(snapshot) {
         send({ kind: 'patch', nodeId: id, props: { value: '' } })
       },
 
-      // setData: the main way a script updates a container's content
-      // (e.g. list.setData([...]) replaces the list's rendered items).
-      // The host interprets this as a full content replacement of the
-      // named node — exactly how much of the tree it rebuilds is the
-      // host's concern, not the script's.
+      // setData: replaces the node's content with a list of items.
+      // The host renders each as a separate Text row inside the container.
       setData(items) {
         send({ kind: 'patch', nodeId: id, props: { _data: items } })
+      },
+
+      // setText: sets a single text node's content directly.
+      // Works on Paragraph, Heading, or any node backed by a TextRenderable.
+      setText(text) {
+        if (mirror?.props) mirror.props.content = text
+        send({ kind: 'patch', nodeId: id, props: { content: text } })
       },
 
       // Register an event handler for a real DOM interaction.

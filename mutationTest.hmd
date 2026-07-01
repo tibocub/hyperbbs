@@ -1,0 +1,22 @@
+# Mutation Test
+
+:::panel{id=status}
+Click the button to change this text.
+:::
+
+::button{id=go label="Click me"}
+
+:::script
+const status = hypersite.getElementById('status')
+const btn = hypersite.getElementById('go')
+
+let count = 0
+
+btn.on('press', async () => {
+  count++
+  status.setText('Button pressed ' + count + ' time(s)!')
+  console.log('setText called, count:', count)
+})
+
+console.log('mutation test script ready')
+:::

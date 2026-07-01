@@ -174,19 +174,19 @@ await loadPosts()
 
 ### Node types
 
-| Type | Directive | Description |
-|---|---|---|
-| `ContainerPanel` | `:::panel` | Styled box with optional border |
-| `ContainerForm` | `:::form` | Layout container for input widgets |
-| `QueryBlock` | `:::query` | Declarative graph query; results available to following template |
-| `TemplateBlock` | `:::template` | Renders query results via interpolation; no logic, no scripting |
-| `InputNode` | `::input` | Text / select / checkbox inputs |
-| `ButtonNode` | `::button` | Pressable button |
-| `MarqueeNode` | `::marquee` | Horizontally scrolling text |
-| `BigTextNode` | `::bigtext` | ASCII large text (figlet-style) |
-| `ColorSpan` | `:color[text]{fg=teal}` | Inline colored text |
-| `ScriptBlock` | `:::script` | Sandboxed JS, executed at mount |
-| `StyleBlock` | `:::style` | JSON prop overrides by id or type selector |
+| Type             | Directive               | Description                                                      |
+|------------------|-------------------------|------------------------------------------------------------------|
+| `ContainerPanel` | `:::panel`              | Styled box with optional border                                  |
+| `ContainerForm`  | `:::form`               | Layout container for input widgets                               |
+| `QueryBlock`     | `:::query`              | Declarative graph query; results available to following template |
+| `TemplateBlock`  | `:::template`           | Renders query results via interpolation; no logic, no scripting  |
+| `InputNode`      | `::input`               | Text / select / checkbox inputs                                  |
+| `ButtonNode`     | `::button`              | Pressable button                                                 |
+| `MarqueeNode`    | `::marquee`             | Horizontally scrolling text                                      |
+| `BigTextNode`    | `::bigtext`             | ASCII large text (figlet-style)                                  |
+| `ColorSpan`      | `:color[text]{fg=teal}` | Inline colored text                                              |
+| `ScriptBlock`    | `:::script`             | Sandboxed JS, executed at mount                                  |
+| `StyleBlock`     | `:::style`              | JSON prop overrides by id or type selector                       |
 
 ### Style system
 
@@ -251,16 +251,47 @@ Human-readable names are a future concern, handled by a pluggable resolver inter
 
 ---
 
+## Later WebUI planned for mobile and destop support
+
+Completely portable (zero OpenTUI imports, works in any runtime):
+- hypermd — the entire package: parser, transformer, nodes, styles, resolver, external loading
+- src/sandbox/protocol.js, snapshot.js, harness.js — the scripting sandbox and its protocol
+- src/loader.js — the file/Hypergraph resolver
+
+TUI-specific (OpenTUI imports, would need a parallel web implementation):
+- src/reconciler.js — mounts HyperDOM into OpenTUI Renderables
+- src/node-map.js — maps HyperDOM node types to OpenTUI constructors
+- src/inline-text.js — builds OpenTUI TextChunk arrays from inline nodes
+- src/custom-renderables/ — the composite OpenTUI widgets
+- src/sandbox/host.js — partially; the SandboxHost class itself is portable, but _applyDataList/_findTextTarget use TextRenderable directly
+- src/main.js — the entry point, fully TUI
+
+---
+
 ## Status
 
-- [WIP] HyperMD parser (micromark + directives)
-- [ ] HyperDOM reactive tree
-- [ ] `:::query` / `:::template` resolver
-- [ ] OpenTUI reconciler
-- [ ] Script sandbox (Worker + vm)
+- [WIP] [HyperMD](https://github.com/tibocub/HyperMD) parser
+- [WIP] [HyperDNS](https://github.com/tibocub/HyperDNS) integration
+- [WIP] HyperDOM reactive tree
+- [ ] `:::query` / `:::template` resolver (like hugo sites rendered client-side)
+- [WIP] OpenTUI reconciler
+- [WIP] Script sandbox (Worker + vm)
+    - [x] hypersite.getElementById(id) — get a handle to any named element
+    - [x] .on('press', fn) — register a button press handler (or 'change' for selects)
+    - [x] .setText(string) — update a text node's content live
+    - [x] .setData([...strings]) — replace a container's content with a list of text rows, correctly cleaning up previous dynamic children without touching static ones
+    - [x] .clear() — clear an input field
+    - [ ] db.query().match().in().exec() — async query (stubbed, returns [] until Hypergraph is wired)
+    - [ ] db.put() / db.get() — async writes/reads (also stubbed)
+    - [ ] console.log/warn/error — relayed to stderr without corrupting the TUI
 - [ ] `db` primitive API
-- [ ] Browser shell (address bar, nav)
-- [ ] P2P replication via Hypergraph
+- [ ] Browser shell
+    - [ ] address bar
+    - [ ] navigation
+    - [ ] menu
+    - [ ] bookmarks
+    - [ ] ID manager (like web browser's password manager but with keypairs)
+- [ ] P2P replication via Hypergraph + Hyperswarm
 
 ---
 
@@ -269,17 +300,16 @@ Human-readable names are a future concern, handled by a pluggable resolver inter
 Notable dependencies:
 - [Hypergraph](https://github.com/tibocub/hypergraph) — the P2P graph store powering the data layer
 - [HyperDNS](https://github.com/tibocub/hyperdns) — the DNS-like P2P address resolver for human-readable names
-- [HyperMD](https://github.com/tibocub/hypermd) — the Markdown parser with custom directives
-- [Holepunch ecosystem](https://github.com/holepunchto) — the P2P networking stack (Hypercore, Autobase, Hyperswarm)
+- [HyperMD](https://github.com/tibocub/hypermd) — HyperMarkdown parser
+- [Holepunch ecosystem](https://github.com/holepunchto) — the P2P stack (Corestore, Autobase, Hyperswarm)
 - [OpenTUI](https://github.com/anomalyco/opentui) — the terminal UI renderer
 - [micromark](https://github.com/micromark/micromark/) — the Markdown parser
 
 Inspirations:
 - [Gemini protocol](https://geminiprotocol.net/) and other minimal web protocols (gopher, titan...) — spiritual ancestor; what we're trying to go beyond
 - [Links' text mode](https://links.twibright.com/) — the classic terminal web browser experience
-- [I2P](https://geti2p.net/), [IPFS](https://ipfs.tech/), [FreeNet](https://freenet.org/) and others — P2P decentralized websites hosting
+- [I2P](https://geti2p.net/), [IPFS](https://ipfs.tech/), [FreeNet](https://freenet.org/) and others — P2P decentralized websites hosting and interesting web alternatives
 - [Hugo](https://github.com/gohugoio/hugo) — static site generator that inspired the idea of using Markdown to generate dynamic content on static sites
-
 
 
 
