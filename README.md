@@ -285,10 +285,11 @@ TUI-specific (OpenTUI imports, would need a parallel web implementation):
     - [ ] db.put() / db.get() — async writes/reads (also stubbed)
     - [ ] console.log/warn/error — relayed to stderr without corrupting the TUI
 - [ ] `db` primitive API
-- [ ] Browser shell
+- [ ] TUI Browser shell
+    - [x] scroll bar
     - [ ] address bar
     - [ ] navigation
-    - [ ] menu
+    - [ ] menu and config menu
     - [ ] bookmarks
     - [ ] ID manager (like web browser's password manager but with keypairs)
 - [ ] P2P replication via Hypergraph + Hyperswarm
