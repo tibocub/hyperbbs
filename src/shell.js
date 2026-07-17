@@ -1,47 +1,82 @@
 /**
  * shell.js
  *
- * The browser chrome that wraps the hypersite viewport. Owns:
+ * Browser chrome wrapping the hypersite viewport.
+ *
+ * Layout (default — console on right):
  *
  *   ┌─ address bar ──────────────────────────────────────────────┐
- *   │ hyper://current-page-key-or-path                  [peers] │
- *   ├─ viewport (ScrollBoxRenderable) ──────────────────────────┤
- *   │                                                           │
- *   │  hypersite content                                        │
- *   │                                                           │
- *   ├─ console panel (collapsible) ─────────────────────────────┤
- *   │ [script:log] last log line                                │
- *   └───────────────────────────────────────────────────────────┘
+ *   │ [←] [→]  hyper://…                            ○ offline   │
+ *   ├─ content ──────────────────────────┬─ devtools ───────────┤
+ *   │                                    │ ▸ console  [_] [×]   │
+ *   │  hypersite viewport                │ [script:log] …       │
+ *   │  (scrollable)                      │ …                    │
+ *   │                                    │ …                    │
+ *   └────────────────────────────────────┴──────────────────────┘
  *
- * Global keyboard handling (Tab/Shift+Tab focus cycling, Ctrl+L
- * address bar focus) is wired here via renderer.stdin interception
- * using OpenTUI's own parseKeypress — this is how we get shell-level
- * shortcuts before they reach the focused renderable's onKeyDown.
+ * Console panel can be docked right (default) or bottom, toggled
+ * via the [_]/[|] icon in the devtools header, and shown/hidden
+ * via F12.
  *
- * The Reconciler and SandboxHost are created by the shell so they can
- * share the console routing and focus management cleanly.
+ * Address bar is focusable — F6 or Ctrl+L focuses it, Enter
+ * navigates, Escape blurs it back to page content.
+ *
+ * Global keys are intercepted on renderer.stdin before they reach
+ * focused renderables, resolved via keybindings.js.
  */
 
-import { BoxRenderable, TextRenderable, ScrollBoxRenderable, parseKeypress } from '@opentui/core'
-import { Reconciler } from './reconciler.js'
-import { SandboxHost } from './sandbox/host.js'
-import { createTuiPatcher } from './patcher.js'
+import {
+  BoxRenderable,
+  TextRenderable,
+  InputRenderable,
+  ScrollBoxRenderable,
+  parseKeypress,
+} from '@opentui/core'
 
-const ADDRESS_BAR_HEIGHT   = 1   // single row
-const CONSOLE_PANEL_HEIGHT = 4   // lines of console history shown
-const CONSOLE_MAX_LINES    = 100 // ring buffer size
+import { Reconciler }     from './reconciler.js'
+import { SandboxHost }    from './sandbox/host.js'
+import { createTuiPatcher } from './patcher.js'
+import { createKeyResolver } from './keybindings.js'
+import { readFileSync }   from 'node:fs'
+import { resolve, dirname } from 'node:path'
+import { parse, applyStyles, resolveExternals } from 'hypermd'
+import { resolveQueries } from './query-resolver.js'
+import { createFsLoader } from './loader.js'
+
+const ADDR_HEIGHT       = 1
+const CONSOLE_WIDTH_PCT = 27   // % of total width when docked right
+const CONSOLE_HEIGHT    = 8    // rows when docked bottom
+const CONSOLE_MAX_LINES = 200
+
+/**
+ * Stub query fetcher — returns empty results until Hypergraph is wired.
+ * Replace with a real db.query() call when integrating Hypergraph.
+ */
+async function stubQueryFetcher(filter) {
+  if (process.env.HYPERBBS_DEBUG) {
+    process.stderr.write(`[hyperbbs:query] stub: ${JSON.stringify(filter)}\n`)
+  }
+  return []
+}
 
 export class BrowserShell {
   /**
    * @param {import('@opentui/core').CliRenderer} renderer
+   * @param {object[]} [userBindings] - optional keybinding overrides
    */
-  constructor(renderer) {
-    this.renderer = renderer
-    this._consoleLogs = []       // ring buffer of { level, text } entries
-    this._consoleLines = []      // TextRenderable refs for the console panel rows
-    this._focusables = []        // ordered list of focusable _tuiRefs for Tab cycling
-    this._focusIndex = -1
-    this._consoleVisible = true
+  constructor(renderer, userBindings = []) {
+    this.renderer    = renderer
+    this._resolveKey = createKeyResolver(userBindings)
+
+    this._consoleLines   = []    // TextRenderable refs, one per log entry
+    this._focusables     = []
+    this._focusIndex     = -1
+    this._devtoolsOpen   = true
+    this._devtoolsDock   = 'right'  // 'right' | 'bottom'
+    this._addressFocused = false
+    this._reconciler     = null
+    this._sandbox        = null
+    this._currentPath    = null
 
     this._buildLayout()
     this._wireKeyboard()
@@ -50,36 +85,198 @@ export class BrowserShell {
   // ─── Public API ────────────────────────────────────────────────────────────
 
   /**
-   * Mount and render a parsed, styled HyperDOM document.
-   * Replaces whatever was previously in the viewport.
-   *
-   * @param {object} doc      - from hypermd parse() + applyStyles()
-   * @param {string} address  - the address to show in the address bar
-   *                           (file path now, hyper:// key later)
+   * Load and render a .hmd file by path.
+   * Can be called repeatedly to navigate between pages.
    */
-  load(doc, address) {
-    this._clearViewport()
-    this._setAddress(address)
-    this._clearConsole()
+  async loadFile(filePath) {
+    const absPath = resolve(filePath)
+    this._setAddressText(absPath)
+    this._addressInput.value = absPath
+    this._currentPath = absPath
 
-    // Fresh reconciler per page load
-    if (this._reconciler) this._reconciler = null
+    let doc
+    try {
+      const source = readFileSync(absPath, 'utf8')
+      doc = parse(source, { baseKey: absPath })
+      await resolveExternals(doc, createFsLoader(absPath))
+      // Resolve :::query blocks with a stub fetcher (returns empty results
+      // until Hypergraph is wired in — same pattern as db.* stubs in sandbox)
+      await resolveQueries(doc, stubQueryFetcher)
+      applyStyles(doc.nodes, doc.styles)
+    } catch (e) {
+      this._appendConsole('error', `Failed to load "${absPath}": ${e.message}`)
+      return
+    }
+
+    this._mountDoc(doc)
+  }
+
+  destroy() {
+    this._sandbox?.destroy()
+    this._unwireKeyboard?.()
+  }
+
+  // ─── Layout ────────────────────────────────────────────────────────────────
+
+  _buildLayout() {
+    const r = this.renderer
+
+    // ── Root: full screen column ──
+    this._root = new BoxRenderable(r, {
+      width: '100%', height: '100%', flexDirection: 'column',
+    })
+    r.root.add(this._root)
+
+    // ── Address bar ──
+    this._buildAddressBar()
+
+    // ── Body: content + devtools side by side (or stacked) ──
+    this._body = new BoxRenderable(r, {
+      width: '100%', flexGrow: 1, flexDirection: 'row',
+    })
+    this._root.add(this._body)
+
+    // Viewport
+    this._viewport = new ScrollBoxRenderable(r, {
+      flexGrow: 1, height: '100%',
+      scrollY: true, scrollX: false,
+      stickyScroll: false, viewportCulling: false,
+      contentOptions: { flexDirection: 'column', padding: 1, gap: 1 },
+      verticalScrollbarOptions: { showArrows: true },
+    })
+    this._body.add(this._viewport)
+
+    // Devtools panel (right dock by default)
+    this._buildDevtools()
+  }
+
+  _buildAddressBar() {
+    const r = this.renderer
+
+    this._addrBar = new BoxRenderable(r, {
+      width: '100%', height: ADDR_HEIGHT,
+      flexDirection: 'row', backgroundColor: '#111827',
+    })
+
+    // Back/forward placeholders (future nav history)
+    const navBtns = new TextRenderable(r, { content: ' ← → ', fg: '#4b5563' })
+    this._addrBar.add(navBtns)
+
+    // Address input — the main interactive element
+    this._addressInput = new InputRenderable(r, {
+      flexGrow: 1,
+      value: '',
+      placeholder: 'hyper:// or file path…',
+      fg: '#d1d5db',
+      backgroundColor: '#1f2937',
+      focusedBackgroundColor: '#374151',
+    })
+    // Enter in address bar → navigate
+    this._addressInput.on('enter', () => {
+      const path = this._addressInput.value.trim()
+      if (path) this.loadFile(path)
+      this._blurAddressBar()
+    })
+    this._addrBar.add(this._addressInput)
+
+    // Peer status (placeholder until Hypergraph)
+    this._peerStatus = new TextRenderable(r, {
+      content: ' ○ offline ', fg: '#ef4444',
+    })
+    this._addrBar.add(this._peerStatus)
+
+    this._root.add(this._addrBar)
+  }
+
+  _buildDevtools() {
+    const r = this.renderer
+
+    this._devtools = new BoxRenderable(r, {
+      width: `${CONSOLE_WIDTH_PCT}%`,
+      height: '100%',
+      flexDirection: 'column',
+      backgroundColor: '#0f172a',
+    })
+
+    // ── Devtools header bar ──
+    this._devHeader = new BoxRenderable(r, {
+      width: '100%', height: 1, flexDirection: 'row',
+      backgroundColor: '#1e293b',
+    })
+
+    // Active tab label (just "console" for now — "elements" etc later)
+    const tabLabel = new TextRenderable(r, {
+      content: ' ▸ console', fg: '#94a3b8', flexGrow: 1,
+    })
+    this._devHeader.add(tabLabel)
+
+    // Dock-toggle button: shows "|" when docked right, "_" when docked bottom
+    this._dockToggleBtn = new BoxRenderable(r, {
+      width: 3, height: 1, focusable: true,
+      backgroundColor: '#1e293b', focusedBackgroundColor: '#334155',
+    })
+    this._dockToggleLabel = new TextRenderable(r, { content: '_', fg: '#64748b' })
+    this._dockToggleBtn.add(this._dockToggleLabel)
+    this._dockToggleBtn.onMouseDown = () => this._toggleDock()
+    this._dockToggleBtn.onKeyDown = (key) => {
+      if (key.name === 'return' || key.name === 'space') this._toggleDock()
+    }
+    this._devHeader.add(this._dockToggleBtn)
+
+    // Close button
+    const closeBtn = new BoxRenderable(r, {
+      width: 3, height: 1, focusable: true,
+      backgroundColor: '#1e293b', focusedBackgroundColor: '#334155',
+    })
+    closeBtn.add(new TextRenderable(r, { content: ' ×', fg: '#64748b' }))
+    closeBtn.onMouseDown = () => this._setDevtoolsOpen(false)
+    closeBtn.onKeyDown = (key) => {
+      if (key.name === 'return' || key.name === 'space') this._setDevtoolsOpen(false)
+    }
+    this._devHeader.add(closeBtn)
+
+    this._devtools.add(this._devHeader)
+
+    // ── Console scroll area ──
+    // A ScrollBoxRenderable containing one TextRenderable per log entry,
+    // added dynamically. stickyScroll: true auto-scrolls to newest entry
+    // (like a terminal), but the user can scroll up to read history and
+    // it won't snap back until a new entry arrives.
+    this._consoleScroll = new ScrollBoxRenderable(r, {
+      flexGrow: 1,
+      width: '100%',
+      scrollY: true,
+      scrollX: false,
+      stickyScroll: true,
+      stickyStart: 'bottom',    // auto-scroll to newest entry on content change,
+                                 // but respects manual scroll (user scrolled up to
+                                 // inspect history → new entries don't jump it back
+                                 // until user scrolls back to the bottom)
+      viewportCulling: false,
+      focusable: true,
+      contentOptions: { flexDirection: 'column' },
+      verticalScrollbarOptions: { showArrows: false },
+    })
+    this._devtools.add(this._consoleScroll)
+    // Keep a reference to the content box for adding/removing log TextRenderables
+    this._consoleLines = []   // TextRenderable refs, one per log entry
+
+    this._body.add(this._devtools)
+  }
+
+  // ─── Document mounting ─────────────────────────────────────────────────────
+
+  _mountDoc(doc) {
+    this._clearViewport()
+    this._clearConsole()
+    this._sandbox?.destroy()
+    this._sandbox = null
+    this._reconciler = null
+
     this._reconciler = new Reconciler(this.renderer)
     this._reconciler.mountDocument(doc.nodes, this._viewport)
-
-    // Collect focusable renderables in document order for Tab cycling
     this._buildFocusList()
-
-    // Focus the first focusable element if any
-    if (this._focusables.length > 0) {
-      this._setFocus(0)
-    }
-
-    // Wire sandbox if the document has scripts
-    if (this._sandbox) {
-      this._sandbox.destroy()
-      this._sandbox = null
-    }
+    if (this._focusables.length > 0) this._setFocus(0)
 
     if (doc.scripts.length > 0) {
       this._sandbox = new SandboxHost({
@@ -88,161 +285,125 @@ export class BrowserShell {
         db: null,
         onPatch: createTuiPatcher(this.renderer),
         onConsole: (level, args) => this._appendConsole(level, args.join(' ')),
-        onScriptError: (message) => this._appendConsole('error', message),
+        onScriptError: (msg) => this._appendConsole('error', msg),
       })
       this._sandbox.runScripts(doc.scripts, doc.nodes)
-
-      this._sandbox.on('navigate', (addr) => this.emit?.('navigate', addr))
-      this._sandbox.on('notify',   (text, level) => this._appendConsole(level, `[notify] ${text}`))
+      this._sandbox.on('navigate', (addr) => this.loadFile(addr))
+      this._sandbox.on('notify',   (text, lvl) => this._appendConsole(lvl ?? 'log', `[notify] ${text}`))
     }
   }
-
-  /**
-   * Tear down everything cleanly (call before process exit or navigation).
-   */
-  destroy() {
-    this._sandbox?.destroy()
-    this._unwireKeyboard?.()
-  }
-
-  // ─── Layout construction ───────────────────────────────────────────────────
-
-  _buildLayout() {
-    const r = this.renderer
-
-    // Root: full screen, column direction
-    this._root = new BoxRenderable(r, {
-      width: '100%',
-      height: '100%',
-      flexDirection: 'column',
-    })
-    r.root.add(this._root)
-
-    // ── Address bar (top row) ──
-    this._addressBar = new BoxRenderable(r, {
-      width: '100%',
-      height: ADDRESS_BAR_HEIGHT,
-      flexDirection: 'row',
-      backgroundColor: '#1a1a2e',
-    })
-    this._addressText = new TextRenderable(r, {
-      content: ' hyper://…',
-      fg: '#7f8c8d',
-      width: '100%',
-    })
-    this._peerStatus = new TextRenderable(r, {
-      content: '○ offline ',
-      fg: '#e74c3c',
-    })
-    this._addressBar.add(this._addressText)
-    this._addressBar.add(this._peerStatus)
-    this._root.add(this._addressBar)
-
-    // ── Viewport (middle, fills remaining space via flexGrow) ──
-    // flexGrow: 1 is the correct Yoga prop for "fill remaining height
-    // after fixed-height siblings" — calc() strings are not supported
-    // by OpenTUI's Yoga layout engine.
-    this._viewport = new ScrollBoxRenderable(r, {
-      width: '100%',
-      flexGrow: 1,
-      scrollY: true,
-      scrollX: false,
-      stickyScroll: false,
-      viewportCulling: false,
-      contentOptions: {
-        flexDirection: 'column',
-        padding: 1,
-        gap: 1,
-      },
-      verticalScrollbarOptions: { showArrows: true },
-    })
-    this._root.add(this._viewport)
-
-    // ── Console panel (bottom) ──
-    this._consolePanel = new BoxRenderable(r, {
-      width: '100%',
-      height: CONSOLE_PANEL_HEIGHT,
-      flexDirection: 'column',
-      backgroundColor: '#0d0d0d',
-    })
-
-    // Header row
-    const consoleHeader = new TextRenderable(r, {
-      content: ' ▸ console',
-      fg: '#555',
-    })
-    this._consolePanel.add(consoleHeader)
-
-    // Log lines (fixed slots — we overwrite content rather than
-    // add/remove, keeping layout stable)
-    this._consoleLines = []
-    for (let i = 0; i < CONSOLE_PANEL_HEIGHT - 1; i++) {
-      const line = new TextRenderable(r, {
-        content: '',
-        fg: '#666',
-      })
-      this._consolePanel.add(line)
-      this._consoleLines.push(line)
-    }
-    this._root.add(this._consolePanel)
-  }
-
-  // ─── Address bar ───────────────────────────────────────────────────────────
-
-  _setAddress(address) {
-    this._addressText.content = ` ${address}`
-  }
-
-  // ─── Console panel ─────────────────────────────────────────────────────────
-
-  _appendConsole(level, text) {
-    const color = { log: '#aaa', warn: '#f39c12', error: '#e74c3c' }[level] ?? '#aaa'
-    this._consoleLogs.push({ color, text: `[${level}] ${text}` })
-    if (this._consoleLogs.length > CONSOLE_MAX_LINES) {
-      this._consoleLogs.shift()
-    }
-    this._renderConsoleLines()
-  }
-
-  _renderConsoleLines() {
-    const slots = this._consoleLines.length
-    const logs  = this._consoleLogs
-    const start = Math.max(0, logs.length - slots)
-    for (let i = 0; i < slots; i++) {
-      const entry = logs[start + i]
-      if (entry) {
-        this._consoleLines[i].content = ` ${entry.text}`
-        this._consoleLines[i].fg      = entry.color
-      } else {
-        this._consoleLines[i].content = ''
-      }
-    }
-  }
-
-  _clearConsole() {
-    this._consoleLogs = []
-    for (const line of this._consoleLines) line.content = ''
-  }
-
-  // ─── Viewport management ───────────────────────────────────────────────────
 
   _clearViewport() {
-    const children = this._viewport.getChildren()
-    for (const child of children) {
+    for (const child of this._viewport.getChildren()) {
       try { this._viewport.remove(child.id) } catch {}
     }
   }
 
+  // ─── Address bar ───────────────────────────────────────────────────────────
+
+  _setAddressText(text) {
+    this._addressInput.value = text
+  }
+
+  _focusAddressBar() {
+    this._addressFocused = true
+    this._focusRenderable(this._addressInput)
+  }
+
+  _blurAddressBar() {
+    this._addressFocused = false
+    try { this._addressInput.blur?.() } catch {}
+    if (this._focusables.length > 0) {
+      this._focusRenderable(this._focusables[Math.max(0, this._focusIndex)])
+    }
+  }
+
+  // ─── Devtools panel ────────────────────────────────────────────────────────
+
+  _setDevtoolsOpen(open) {
+    this._devtoolsOpen = open
+    try {
+      if (open) {
+        // Re-add to body if not already there
+        const children = this._body.getChildren()
+        if (!children.includes(this._devtools)) {
+          this._body.add(this._devtools)
+        }
+      } else {
+        this._body.remove(this._devtools.id)
+      }
+    } catch {}
+  }
+
+  _toggleDevtools() {
+    this._setDevtoolsOpen(!this._devtoolsOpen)
+  }
+
+  _toggleDock() {
+    this._devtoolsDock = this._devtoolsDock === 'right' ? 'bottom' : 'right'
+    this._dockToggleLabel.content = this._devtoolsDock === 'right' ? '_' : '|'
+    this._applyDockLayout()
+  }
+
+  _applyDockLayout() {
+    if (this._devtoolsDock === 'right') {
+      // Devtools panel: fixed width column alongside viewport
+      try {
+        this._body.flexDirection    = 'row'
+        this._devtools.width        = `${CONSOLE_WIDTH_PCT}%`
+        this._devtools.height       = '100%'
+        this._viewport.height       = '100%'
+      } catch {}
+    } else {
+      // Devtools panel: fixed height row below viewport
+      try {
+        this._body.flexDirection    = 'column'
+        this._devtools.width        = '100%'
+        this._devtools.height       = CONSOLE_HEIGHT
+        this._viewport.flexGrow     = 1
+        this._viewport.height       = undefined
+      } catch {}
+    }
+  }
+
+  // ─── Console output ────────────────────────────────────────────────────────
+
+  _appendConsole(level, text) {
+    const color = { log: '#94a3b8', warn: '#fbbf24', error: '#f87171' }[level] ?? '#94a3b8'
+    const clean = text.replace(/[\r\n]+/g, ' ').slice(0, 300)
+
+    // Add a new TextRenderable child for this log entry
+    const line = new TextRenderable(this.renderer, {
+      content: ` ${clean}`,
+      fg: color,
+      width: '100%',
+    })
+    this._consoleScroll.add(line)
+    this._consoleLines.push(line)
+
+    // Trim the oldest entries when we exceed the ring buffer limit,
+    // removing their renderables from the scroll box too
+    if (this._consoleLines.length > CONSOLE_MAX_LINES) {
+      const oldest = this._consoleLines.shift()
+      try { this._consoleScroll.remove(oldest.id) } catch {}
+    }
+
+    // Auto-open devtools when a script logs something
+    if (!this._devtoolsOpen) this._setDevtoolsOpen(true)
+  }
+
+  _clearConsole() {
+    for (const line of this._consoleLines) {
+      try { this._consoleScroll.remove(line.id) } catch {}
+    }
+    this._consoleLines = []
+  }
+
   // ─── Tab focus cycling ─────────────────────────────────────────────────────
 
-  /**
-   * Collect all focusable _tuiRefs from the current reconciler's mounted
-   * tree in document order. Called after each page load.
-   */
   _buildFocusList() {
     this._focusables = []
     if (!this._reconciler) return
-
     const walk = (renderable) => {
       if (renderable.focusable) this._focusables.push(renderable)
       if (renderable.getChildren) {
@@ -253,50 +414,62 @@ export class BrowserShell {
   }
 
   _setFocus(index) {
-    if (this._focusables.length === 0) return
+    if (!this._focusables.length) return
     this._focusIndex = ((index % this._focusables.length) + this._focusables.length) % this._focusables.length
-    const target = this._focusables[this._focusIndex]
-    try { this.renderer.focusRenderable(target) } catch {}
+    this._focusRenderable(this._focusables[this._focusIndex])
   }
 
-  _focusNext()  { this._setFocus(this._focusIndex + 1) }
-  _focusPrev()  { this._setFocus(this._focusIndex - 1) }
-
-  // ─── Global keyboard interception ──────────────────────────────────────────
+  _focusNext() { this._setFocus(this._focusIndex + 1) }
+  _focusPrev() { this._setFocus(this._focusIndex - 1) }
 
   /**
-   * Listen on renderer.stdin using OpenTUI's own parseKeypress so we
-   * parse the same way OpenTUI does. Shell-level shortcuts are handled
-   * here; everything else is left for the focused renderable's onKeyDown.
-   *
-   * Shell shortcuts:
-   *   Tab          → focus next element
-   *   Shift+Tab    → focus previous element
-   *   Ctrl+L       → (future) focus address bar
-   *   Ctrl+`       → toggle console panel visibility
+   * Transfer focus using renderable.focus()/blur() rather than
+   * renderer.focusRenderable(). The renderer method only sets the visual
+   * highlight — it does NOT wire up the keypress handler. That happens
+   * inside renderable.focus() which subscribes to renderer._internalKeyInput.
+   * Without calling .focus(), the renderable never receives keystrokes.
    */
+  _focusRenderable(target) {
+    if (!target) return
+    try {
+      const current = this.renderer.currentFocusedRenderable
+      if (current && current !== target) current.blur?.()
+      target.focus?.()
+    } catch {}
+  }
+
+  // ─── Keyboard handling ─────────────────────────────────────────────────────
+
   _wireKeyboard() {
     const handler = (buf) => {
       const key = parseKeypress(buf)
       if (!key) return
 
-      if (key.name === 'tab' && !key.shift) { this._focusNext(); return }
-      if (key.name === 'tab' &&  key.shift) { this._focusPrev(); return }
-      // Ctrl+` — toggle console
-      if (key.ctrl && key.name === '`') { this._toggleConsole(); return }
+      const action = this._resolveKey(key)
+      if (!action) return
+
+      switch (action) {
+        case 'devtools:toggle':        this._toggleDevtools();    break
+        case 'devtools:focus_console':
+          if (!this._devtoolsOpen) this._setDevtoolsOpen(true)
+          this._focusRenderable(this._consoleScroll)
+          break
+        case 'focus:next':
+          if (!this._addressFocused) { this._focusNext(); break }
+          return  // let the address input handle Tab
+        case 'focus:prev':
+          if (!this._addressFocused) { this._focusPrev(); break }
+          return
+        case 'nav:focus_address': this._focusAddressBar(); break
+        case 'nav:escape':
+          if (this._addressFocused) this._blurAddressBar()
+          break
+        // nav:confirm is handled by the InputRenderable 'enter' event directly
+        // nav:back / nav:forward — future history implementation
+      }
     }
 
     this.renderer.stdin.on('data', handler)
-    // Store cleanup function for destroy()
     this._unwireKeyboard = () => this.renderer.stdin.off('data', handler)
-  }
-
-  _toggleConsole() {
-    this._consoleVisible = !this._consoleVisible
-    // Collapse the panel to 1 row (header only) or restore it
-    // OpenTUI doesn't have a visibility toggle, but height=1 hides all
-    // log lines since they're overflow, and the header label changes.
-    const h = this._consoleVisible ? CONSOLE_PANEL_HEIGHT : 1
-    try { this._consolePanel.height = h } catch {}
   }
 }

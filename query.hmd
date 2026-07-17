@@ -1,0 +1,35 @@
+# Forum — Query & Template Demo
+
+This page shows :::query and :::template rendering.
+Since Hypergraph isn't wired yet, the query returns no results.
+This is expected — add real data via db.put() when the stub is replaced.
+
+---
+
+## Recent Posts
+
+::query{type=post sort=createdAt:desc limit=10 as=posts}
+
+:::template{for=posts}
+:::panel{border=rounded}
+### {{entity.author|pubkey:short}} · {{entity.createdAt|date:relative}}
+
+{{content.body|truncate:200}}
+
+:color[{{tag:sub:}}]{fg=teal} · :color[{{relations.reply.count}} replies]{fg=amber}
+:::
+:::
+
+*(No posts yet — db.query() returns stub empty results until Hypergraph is wired.)*
+
+---
+
+## Featured
+
+::query{type=post tag=featured limit=3 as=featured}
+
+:::template{for=featured}
+**{{entity.author|pubkey:short}}**: {{content.body|truncate:80}}
+:::
+
+*(No featured posts yet.)*
