@@ -52,6 +52,9 @@ export class SandboxHost extends EventEmitter {
     onPatch     = null,
     onConsole   = null,
     onScriptError = null,
+    onDbQuery   = null,
+    onDbGet     = null,
+    onDbPut     = null,
   }) {
     super()
     this.reconciler = reconciler
@@ -62,6 +65,9 @@ export class SandboxHost extends EventEmitter {
     this._onPatch = onPatch ?? defaultOnPatch
     this._onConsole = onConsole ?? defaultOnConsole
     this._onScriptError = onScriptError ?? defaultOnScriptError
+    this._onDbQuery = onDbQuery ?? null
+    this._onDbGet   = onDbGet   ?? null
+    this._onDbPut   = onDbPut   ?? null
 
     this._workers = []
     this._subscriptions = new Set()
@@ -161,27 +167,42 @@ export class SandboxHost extends EventEmitter {
     }
   }
 
-  // ─── Hypergraph stub ───────────────────────────────────────────────────────
+  // ─── Hypergraph db handlers ───────────────────────────────────────────────
 
   async _handleDbQuery(msg, worker) {
-    if (process.env.HYPERBBS_DEBUG) {
-      console.warn('[sandbox:db] db_query (stub):', JSON.stringify(msg.filter))
+    const respond = (m) => worker.postMessage(m)
+    if (this._onDbQuery) {
+      await this._onDbQuery(msg, respond)
+    } else {
+      if (process.env.HYPERBBS_DEBUG) {
+        console.warn('[sandbox:db] db_query (stub):', JSON.stringify(msg.filter))
+      }
+      respond({ kind: 'query_result', requestId: msg.requestId, result: [] })
     }
-    worker.postMessage({ kind: 'query_result', requestId: msg.requestId, result: [] })
   }
 
   async _handleDbGet(msg, worker) {
-    if (process.env.HYPERBBS_DEBUG) {
-      console.warn(`[sandbox:db] db_get (stub): key=${msg.key}`)
+    const respond = (m) => worker.postMessage(m)
+    if (this._onDbGet) {
+      await this._onDbGet(msg, respond)
+    } else {
+      if (process.env.HYPERBBS_DEBUG) {
+        console.warn(`[sandbox:db] db_get (stub): key=${msg.key}`)
+      }
+      respond({ kind: 'get_result', requestId: msg.requestId, result: null })
     }
-    worker.postMessage({ kind: 'get_result', requestId: msg.requestId, result: null })
   }
 
   async _handleDbPut(msg, worker) {
-    if (process.env.HYPERBBS_DEBUG) {
-      console.warn(`[sandbox:db] db_put (stub): primitive=${msg.primitive}`)
+    const respond = (m) => worker.postMessage(m)
+    if (this._onDbPut) {
+      await this._onDbPut(msg, respond)
+    } else {
+      if (process.env.HYPERBBS_DEBUG) {
+        console.warn(`[sandbox:db] db_put (stub): primitive=${msg.primitive}`)
+      }
+      respond({ kind: 'put_result', requestId: msg.requestId, result: { ok: true } })
     }
-    worker.postMessage({ kind: 'put_result', requestId: msg.requestId, result: { ok: true } })
   }
 }
 

@@ -41,6 +41,7 @@ import { readFileSync }   from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { parse, applyStyles, resolveExternals } from 'hypermd'
 import { resolveQueries } from './query-resolver.js'
+import { createQueryFetcher, createSandboxDbCallbacks } from './db.js'
 import { createFsLoader } from './loader.js'
 
 const ADDR_HEIGHT       = 1
@@ -62,9 +63,16 @@ async function stubQueryFetcher(filter) {
 export class BrowserShell {
   /**
    * @param {import('@opentui/core').CliRenderer} renderer
-   * @param {object[]} [userBindings] - optional keybinding overrides
+   * @param {object} [opts]
+   * @param {object[]} [opts.userBindings] - keybinding overrides
+   * @param {object|null} [opts.graph] - Hypergraph instance; when provided,
+   *   :::query blocks and script db.* calls use real graph data instead of stubs
    */
-  constructor(renderer, userBindings = []) {
+  constructor(renderer, opts = {}) {
+    // Accept either (renderer, userBindings[]) for backward compat or (renderer, opts{})
+    const userBindings = Array.isArray(opts) ? opts : (opts.userBindings ?? [])
+    this._graph = Array.isArray(opts) ? null : (opts.graph ?? null)
+
     this.renderer    = renderer
     this._resolveKey = createKeyResolver(userBindings)
 
@@ -99,9 +107,10 @@ export class BrowserShell {
       const source = readFileSync(absPath, 'utf8')
       doc = parse(source, { baseKey: absPath })
       await resolveExternals(doc, createFsLoader(absPath))
-      // Resolve :::query blocks with a stub fetcher (returns empty results
-      // until Hypergraph is wired in — same pattern as db.* stubs in sandbox)
-      await resolveQueries(doc, stubQueryFetcher)
+      const queryFetcher = this._graph
+        ? createQueryFetcher(this._graph)
+        : stubQueryFetcher
+      await resolveQueries(doc, queryFetcher)
       applyStyles(doc.nodes, doc.styles)
     } catch (e) {
       this._appendConsole('error', `Failed to load "${absPath}": ${e.message}`)
@@ -279,13 +288,18 @@ export class BrowserShell {
     if (this._focusables.length > 0) this._setFocus(0)
 
     if (doc.scripts.length > 0) {
+      const dbCallbacks = this._graph
+        ? createSandboxDbCallbacks(this._graph)
+        : {}
+
       this._sandbox = new SandboxHost({
         reconciler: this._reconciler,
-        identity: null,
+        identity: this._graph?.identity?.identityPublicKey?.toString('hex') ?? null,
         db: null,
         onPatch: createTuiPatcher(this.renderer),
         onConsole: (level, args) => this._appendConsole(level, args.join(' ')),
         onScriptError: (msg) => this._appendConsole('error', msg),
+        ...dbCallbacks,
       })
       this._sandbox.runScripts(doc.scripts, doc.nodes)
       this._sandbox.on('navigate', (addr) => this.loadFile(addr))
