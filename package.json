@@ -4,13 +4,20 @@
   "description": "P2P terminal browser prototype. Renders HyperMD hypersites via OpenTUI. Early-stage research playground, not production software.",
   "type": "module",
   "scripts": {
-    "render": "nore --experimental-ffi src/main.js"
+    "render": "node --experimental-ffi src/main.js",
+    "test": "npm run test:sandbox && npm run test:db",
+    "test:sandbox": "brittle-node test/brittle/sandbox/resolver.js",
+    "test:db": "brittle-node test/brittle/db/query-fetcher.js test/brittle/db/query-template.js"
   },
   "keywords": ["hyperbbs", "opentui", "terminal", "p2p", "hypermd"],
   "license": "ISC",
   "dependencies": {
     "@opentui/core": "^0.4.2",
-		"hypermd": ">=0.0.1"
+    "hypermd": ">=0.0.1",
+    "corestore": "*"
+  },
+  "devDependencies": {
+    "brittle": "^4.0.0"
   },
   "engines": {
     "node": ">=26.4.0"
