@@ -90,12 +90,116 @@ export class BrowserShell {
     this._wireKeyboard()
   }
 
+  constructor(renderer, opts = {}) {
+    // Accept either (renderer, userBindings[]) for backward compat or (renderer, opts{})
+    const userBindings = Array.isArray(opts) ? opts : (opts.userBindings ?? [])
+    this._graph = Array.isArray(opts) ? null : (opts.graph ?? null)
+    this._store = Array.isArray(opts) ? null : (opts.store ?? null)
+
+    this.renderer    = renderer
+    this._resolveKey = createKeyResolver(userBindings)
+
+    this._consoleLines   = []    // TextRenderable refs, one per log entry
+    this._focusables     = []
+    this._focusIndex     = -1
+    this._devtoolsOpen   = true
+    this._devtoolsDock   = 'right'  // 'right' | 'bottom'
+    this._addressFocused = false
+    this._reconciler     = null
+    this._sandbox        = null
+    this._currentPath    = null
+    this._network        = null
+
+    this._buildLayout()
+    this._wireKeyboard()
+  }
+
   // ─── Public API ────────────────────────────────────────────────────────────
 
   /**
-   * Load and render a .hmd file by path.
-   * Can be called repeatedly to navigate between pages.
+   * Connect to a hyper:// site by topic and load it.
+   * Two-phase: replicate bootstrap → read it → upgrade connection → render.
+   *
+   * @param {string} topicHex - 64-char hex topic from parseHyperAddress()
    */
+  async connectAndLoad (topicHex) {
+    if (!this._graph || !this._store) {
+      this._appendConsole('error', 'hyper:// navigation requires --data= (a graph storage directory)')
+      return
+    }
+
+    // Tear down any previous network connection
+    if (this._network) {
+      await this._network.destroy()
+      this._network = null
+    }
+
+    this._setAddressText(`hyper://${topicHex}`)
+    this._appendConsole('log', `Connecting to hyper://${topicHex.slice(0, 16)}...`)
+
+    const { HyperBBSNetwork, formatHyperAddress } = await import('./network.js')
+    const network = new HyperBBSNetwork(this._graph, this._store, { role: 'peer' })
+    this._network = network
+
+    network.on('peer-join',     () => this._updatePeerStatus())
+    network.on('update',        () => this._onNetworkUpdate())
+    network.on('flush-timeout', (info) => {
+      this._appendConsole('warn', `DHT flush timeout: ${info.step}`)
+    })
+
+    try {
+      await network.connect(topicHex)
+      this._appendConsole('log', 'Connected. Loading site...')
+    } catch (e) {
+      this._appendConsole('error', `Connection failed: ${e.message}`)
+      return
+    }
+
+    // Load the site's index page from the graph
+    await this._loadSiteIndex()
+  }
+
+  /**
+   * Load the site's index page from the connected graph.
+   * Looks for a 'page:index' entity and renders its HyperMD content.
+   */
+  async _loadSiteIndex () {
+    if (!this._graph) return
+    try {
+      const pages = await this._graph.query().type('page:index').toArray()
+      if (!pages.length) {
+        this._appendConsole('warn', 'No page:index found in this hypersite')
+        return
+      }
+      const content = await this._graph.getContent(pages[0].id)
+      if (!content?.body) {
+        this._appendConsole('warn', 'page:index has no content')
+        return
+      }
+      // Parse the HyperMD source and render it
+      const { parse, applyStyles, resolveExternals } = await import('hypermd')
+      const { resolveQueries } = await import('./query-resolver.js')
+      const { createQueryFetcher } = await import('./db.js')
+
+      const doc = parse(content.body)
+      await resolveQueries(doc, createQueryFetcher(this._graph))
+      applyStyles(doc.nodes, doc.styles)
+      this._mountDoc(doc)
+    } catch (e) {
+      this._appendConsole('error', `Failed to load site index: ${e.message}`)
+    }
+  }
+
+  _onNetworkUpdate () {
+    // Re-render the current page when new data arrives from peers
+    // (live query updates, new posts, etc.)
+    // For now just log — a full reactive re-render is future work
+    this._appendConsole('log', 'New data received from peers')
+  }
+
+  _updatePeerStatus () {
+    // TODO: update the peer count in the address bar
+  }
   async loadFile(filePath) {
     const absPath = resolve(filePath)
     this._setAddressText(absPath)
