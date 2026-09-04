@@ -43,6 +43,7 @@ import { parse, applyStyles, resolveExternals } from 'hypermd'
 import { resolveQueries } from './query-resolver.js'
 import { createQueryFetcher, createSandboxDbCallbacks } from './db.js'
 import { createFsLoader } from './loader.js'
+import { parseHyperAddress } from './network.js'
 
 const ADDR_HEIGHT       = 1
 const CONSOLE_WIDTH_PCT = 27   // % of total width when docked right
@@ -67,29 +68,9 @@ export class BrowserShell {
    * @param {object[]} [opts.userBindings] - keybinding overrides
    * @param {object|null} [opts.graph] - Hypergraph instance; when provided,
    *   :::query blocks and script db.* calls use real graph data instead of stubs
+   * @param {object|null} [opts.store] - Corestore instance; required alongside
+   *   graph for hyper:// navigation (connectAndLoad)
    */
-  constructor(renderer, opts = {}) {
-    // Accept either (renderer, userBindings[]) for backward compat or (renderer, opts{})
-    const userBindings = Array.isArray(opts) ? opts : (opts.userBindings ?? [])
-    this._graph = Array.isArray(opts) ? null : (opts.graph ?? null)
-
-    this.renderer    = renderer
-    this._resolveKey = createKeyResolver(userBindings)
-
-    this._consoleLines   = []    // TextRenderable refs, one per log entry
-    this._focusables     = []
-    this._focusIndex     = -1
-    this._devtoolsOpen   = true
-    this._devtoolsDock   = 'right'  // 'right' | 'bottom'
-    this._addressFocused = false
-    this._reconciler     = null
-    this._sandbox        = null
-    this._currentPath    = null
-
-    this._buildLayout()
-    this._wireKeyboard()
-  }
-
   constructor(renderer, opts = {}) {
     // Accept either (renderer, userBindings[]) for backward compat or (renderer, opts{})
     const userBindings = Array.isArray(opts) ? opts : (opts.userBindings ?? [])
@@ -200,6 +181,25 @@ export class BrowserShell {
   _updatePeerStatus () {
     // TODO: update the peer count in the address bar
   }
+
+  /**
+   * Unified navigation entry point. Routes to connectAndLoad() for
+   * hyper:// addresses, loadFile() for local paths. This is what the
+   * address bar's Enter handler, script hypersite.navigate() calls, and
+   * any future link-click handling should all go through — one place
+   * that knows how to interpret an address string.
+   *
+   * @param {string} address - a hyper:// URL or a local file path
+   */
+  async navigate (address) {
+    const topicHex = parseHyperAddress(address)
+    if (topicHex) {
+      await this.connectAndLoad(topicHex)
+    } else {
+      await this.loadFile(address)
+    }
+  }
+
   async loadFile(filePath) {
     const absPath = resolve(filePath)
     this._setAddressText(absPath)
@@ -284,10 +284,11 @@ export class BrowserShell {
       backgroundColor: '#1f2937',
       focusedBackgroundColor: '#374151',
     })
-    // Enter in address bar → navigate
+    // Enter in address bar → navigate (routes to connectAndLoad for
+    // hyper:// addresses, loadFile for local paths)
     this._addressInput.on('enter', () => {
-      const path = this._addressInput.value.trim()
-      if (path) this.loadFile(path)
+      const address = this._addressInput.value.trim()
+      if (address) this.navigate(address)
       this._blurAddressBar()
     })
     this._addrBar.add(this._addressInput)
@@ -406,7 +407,7 @@ export class BrowserShell {
         ...dbCallbacks,
       })
       this._sandbox.runScripts(doc.scripts, doc.nodes)
-      this._sandbox.on('navigate', (addr) => this.loadFile(addr))
+      this._sandbox.on('navigate', (addr) => this.navigate(addr))
       this._sandbox.on('notify',   (text, lvl) => this._appendConsole(lvl ?? 'log', `[notify] ${text}`))
     }
   }

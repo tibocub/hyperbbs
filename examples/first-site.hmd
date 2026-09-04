@@ -1,0 +1,23 @@
+# Welcome to my first hypersite
+
+This is a simple, static hypersite served entirely from a Hypergraph.
+No server, no files on disk for a visitor to fetch - this page itself
+lives inside the graph as content on a page:index entity.
+
+## About
+
+HyperBBS renders HyperMD directly from P2P data. If you can see this
+page, you connected to the owner's Hypergraph, replicated it locally,
+and now you could disconnect and still have a full copy.
+
+::bigtext[HYPERBBS]{font=tiny}
+
+## Features shown here
+
+- Plain markdown text
+- A heading hierarchy
+- This list itself
+
+---
+
+*Thanks for visiting.*

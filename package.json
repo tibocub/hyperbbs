@@ -8,7 +8,7 @@
     "test": "npm run test:sandbox && npm run test:db && npm run test:network",
     "test:sandbox": "brittle-node test/brittle/sandbox/resolver.js",
     "test:db": "brittle-node test/brittle/db/query-fetcher.js test/brittle/db/query-template.js",
-    "test:network": "brittle-node test/brittle/network/two-peers.js"
+    "test:network": "brittle-node test/brittle/network/two-peers.js test/brittle/network/full-site-flow.js"
   },
   "keywords": ["hyperbbs", "opentui", "terminal", "p2p", "hypermd"],
   "license": "ISC",
