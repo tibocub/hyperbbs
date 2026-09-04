@@ -1,7 +1,7 @@
 /**
  * test/brittle/network/full-site-flow.js
  *
- * End-to-end: seed a site (page:index + topic, matching what
+ * End-to-end: seed a site (page:index, matching what
  * bin/host-site.js writes), replicate to a visitor via local pipe,
  * confirm the visitor can read the page:index content and render it.
  *

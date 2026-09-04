@@ -98,84 +98,128 @@ export class BrowserShell {
   // ─── Public API ────────────────────────────────────────────────────────────
 
   /**
-   * Connect to a hyper:// site by topic and load it.
-   * Two-phase: replicate bootstrap → read it → upgrade connection → render.
+   * Connect to a hyper:// site by owner core key and load it.
    *
-   * @param {string} topicHex - 64-char hex topic from parseHyperAddress()
+   * connect() itself now only resolves once real data (page:index) is
+   * actually readable — via the isReady callback — so there is no
+   * separate "did the connection succeed" question to answer with
+   * timing/timeouts and a second "now try loading the page" step: if
+   * connect() resolves, the page exists and is loaded immediately after.
+   * If it can't find the page within the timeout, connect() rejects
+   * with a clear error instead of resolving into an ambiguous state.
+   *
+   * @param {string} ownerKeyHex - 64-char hex owner core key from parseHyperAddress()
    */
-  async connectAndLoad (topicHex) {
+  async connectAndLoad (ownerKeyHex) {
     if (!this._graph || !this._store) {
       this._appendConsole('error', 'hyper:// navigation requires --data= (a graph storage directory)')
       return
     }
 
-    // Tear down any previous network connection
     if (this._network) {
       await this._network.destroy()
       this._network = null
     }
 
-    this._setAddressText(`hyper://${topicHex}`)
-    this._appendConsole('log', `Connecting to hyper://${topicHex.slice(0, 16)}...`)
+    this._setAddressText(`hyper://${ownerKeyHex}`)
+    this._appendConsole('log', `Connecting to hyper://${ownerKeyHex.slice(0, 16)}...`)
 
-    const { HyperBBSNetwork, formatHyperAddress } = await import('./network.js')
+    const { HyperBBSNetwork } = await import('./network.js')
     const network = new HyperBBSNetwork(this._graph, this._store, { role: 'peer' })
     this._network = network
 
-    network.on('peer-join',     () => this._updatePeerStatus())
-    network.on('update',        () => this._onNetworkUpdate())
-    network.on('flush-timeout', (info) => {
-      this._appendConsole('warn', `DHT flush timeout: ${info.step}`)
+    network.on('raw-connection', (info) => {
+      this._appendConsole('log', `Peer connected (${info.remotePublicKey}...)`)
+    })
+    network.on('debug', (msg) => {
+      this._appendConsole('log', `[net] ${msg}`)
     })
 
     try {
-      await network.connect(topicHex)
-      this._appendConsole('log', 'Connected. Loading site...')
+      let checkCount = 0
+      await network.connect(ownerKeyHex, {
+        // The actual, concrete question — do we have page:index yet? —
+        // rather than inferring success from a DHT step timing out.
+        // Also logs unfiltered vs type-filtered counts periodically:
+        // if unfiltered finds entities but type-filtered doesn't, that
+        // points at a type-indexing issue specific to this data. If
+        // BOTH stay at zero despite the owner core's length growing
+        // (visible in the [net] poll lines), that points at something
+        // in view indexing not processing this core's blocks at all.
+        isReady: async () => {
+          checkCount++
+          const typed = await this._graph.query().type('page:index').toArray()
+          if (typed.length > 0) return true
+
+          if (checkCount % 3 === 1) {
+            const all = await this._graph.query().toArray()
+            this._appendConsole('log', `[diag] unfiltered entities visible: ${all.length}, page:index specifically: ${typed.length}`)
+          }
+          return false
+        },
+        timeoutMs: 30000,
+      })
     } catch (e) {
-      this._appendConsole('error', `Connection failed: ${e.message}`)
+      this._appendConsole('error', e.message)
       return
     }
 
-    // Load the site's index page from the graph
+    this._appendConsole('log', 'Connected — page found. Loading...')
     await this._loadSiteIndex()
   }
 
   /**
    * Load the site's index page from the connected graph.
-   * Looks for a 'page:index' entity and renders its HyperMD content.
+   * Called only after connect()'s isReady check has already confirmed
+   * page:index exists, so this is a straightforward load, not a poll.
+   *
+   * Step-by-step debug logging added after confirming — via direct
+   * inspection of the visitor's on-disk data with bin/inspect-graph.js
+   * — that page:index and site:bootstrap ARE correctly replicated and
+   * indexed by the time a frozen session is killed. This means
+   * networking/replication/indexing are NOT the remaining bug; whatever
+   * causes the terminal to stop redrawing happens somewhere in THIS
+   * method — parsing, query resolution, style application, or mounting
+   * the real HyperDOM tree — not in connect() or the network layer.
    */
   async _loadSiteIndex () {
     if (!this._graph) return
     try {
+      this._appendConsole('log', '[load] querying for page:index...')
       const pages = await this._graph.query().type('page:index').toArray()
       if (!pages.length) {
-        this._appendConsole('warn', 'No page:index found in this hypersite')
+        this._appendConsole('error', 'page:index not found (unexpected — connect() should have confirmed it exists)')
         return
       }
+      this._appendConsole('log', `[load] found page:index (${pages[0].id.slice(0, 20)}...), fetching content...`)
+
       const content = await this._graph.getContent(pages[0].id)
       if (!content?.body) {
-        this._appendConsole('warn', 'page:index has no content')
+        this._appendConsole('error', 'page:index has no content')
         return
       }
-      // Parse the HyperMD source and render it
+      this._appendConsole('log', `[load] content fetched (${content.body.length} chars), parsing...`)
+
       const { parse, applyStyles, resolveExternals } = await import('hypermd')
       const { resolveQueries } = await import('./query-resolver.js')
       const { createQueryFetcher } = await import('./db.js')
 
       const doc = parse(content.body)
+      this._appendConsole('log', `[load] parsed (${doc.nodes.length} top-level nodes), resolving queries...`)
+
       await resolveQueries(doc, createQueryFetcher(this._graph))
+      this._appendConsole('log', '[load] queries resolved, applying styles...')
+
       applyStyles(doc.nodes, doc.styles)
+      this._appendConsole('log', '[load] styles applied, mounting...')
+
       this._mountDoc(doc)
+      this._appendConsole('log', '[load] mountDoc() returned successfully')
+
+      this._appendConsole('log', 'Site loaded.')
     } catch (e) {
       this._appendConsole('error', `Failed to load site index: ${e.message}`)
     }
-  }
-
-  _onNetworkUpdate () {
-    // Re-render the current page when new data arrives from peers
-    // (live query updates, new posts, etc.)
-    // For now just log — a full reactive re-render is future work
-    this._appendConsole('log', 'New data received from peers')
   }
 
   _updatePeerStatus () {
@@ -192,9 +236,9 @@ export class BrowserShell {
    * @param {string} address - a hyper:// URL or a local file path
    */
   async navigate (address) {
-    const topicHex = parseHyperAddress(address)
-    if (topicHex) {
-      await this.connectAndLoad(topicHex)
+    const ownerKeyHex = parseHyperAddress(address)
+    if (ownerKeyHex) {
+      await this.connectAndLoad(ownerKeyHex)
     } else {
       await this.loadFile(address)
     }

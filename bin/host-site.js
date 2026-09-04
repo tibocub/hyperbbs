@@ -3,17 +3,16 @@
  * bin/host-site.js
  *
  * Creates (or resumes) a hypersite: seeds a Hypergraph with a .hmd file
- * as its page:index content, generates or reuses a DHT topic, and hosts
- * it via HyperBBSNetwork so other peers can connect with hyper://<topic>.
+ * as its page:index content, and hosts it via HyperBBSNetwork so other
+ * peers can connect with hyper://<the-site's-own-core-key>.
  *
  * Usage:
  *   node bin/host-site.js <path-to.hmd> --data=./my-site-data
  *
- * On first run, generates a new random topic and prints the hyper://
- * address to share. On subsequent runs against the same --data=
- * directory, reuses the existing topic (stored in the graph itself) and
- * re-hosts the same site — editing the .hmd file and re-running updates
- * the page:index content.
+ * The site's address is simply this graph's own core public key — no
+ * separate topic to generate or remember. Editing the .hmd file and
+ * re-running updates the page:index content in place; the address
+ * stays the same across runs against the same --data= directory.
  *
  * Keeps running (announcing on the DHT) until Ctrl+C.
  */
@@ -21,15 +20,14 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createRequire } from 'node:module'
-import crypto from 'node:crypto'
 import { HyperBBSNetwork, formatHyperAddress } from '../src/network.js'
+import { loadOrCreateDeviceKeyPair } from '../src/identity.js'
 
 const require = createRequire(import.meta.url)
 const Corestore = require('corestore')
 const { Hypergraph } = require('hypergraph')
 
 const PAGE_INDEX_TYPE = 'page:index'
-const SITE_TOPIC_TYPE = 'site:topic'
 
 async function main () {
   const args = process.argv.slice(2)
@@ -51,9 +49,17 @@ async function main () {
   const source = readFileSync(absHmdPath, 'utf8')
 
   console.log(`Opening site data at ${dataPath}...`)
+  // Persist the device identity alongside the data dir so this site's
+  // address (derived from graph.key) is STABLE across restarts —
+  // without this, every run silently generates a new random identity
+  // and therefore a new, different address (confirmed empirically;
+  // see src/identity.js for the full writeup of why this is needed).
+  const deviceKeyPair = loadOrCreateDeviceKeyPair(dataPath)
   const store = new Corestore(dataPath)
-  const graph = new Hypergraph(store)
+  const graph = new Hypergraph(store, { deviceKeyPair })
   await graph.ready()
+
+  const siteAddress = graph.key.toString('hex')
 
   // Find or create the page:index entity
   const existingPages = await graph.query().type(PAGE_INDEX_TYPE).toArray()
@@ -69,50 +75,26 @@ async function main () {
     console.log(`Created page:index (${pageEntity.id})`)
   }
 
-  // Find or create the site's topic
-  const existingTopics = await graph.query().type(SITE_TOPIC_TYPE).toArray()
-  let topicHex
-
-  if (existingTopics.length > 0) {
-    const content = await graph.getContent(existingTopics[0].id)
-    topicHex = content.body
-    console.log('Reusing existing site topic.')
-  } else {
-    topicHex = crypto.randomBytes(32).toString('hex')
-    const topicEntity = await graph.put({ type: SITE_TOPIC_TYPE })
-    await graph.putContent(topicEntity.id, topicHex, 'text/plain')
-    console.log('Generated new site topic.')
-  }
-
-  // Host it
+  // Host it — address is this graph's own core key, no separate topic
   const network = new HyperBBSNetwork(graph, store, { role: 'owner' })
 
-  network.on('peer-join', (info) => {
-    console.log(`[peer joined] ${JSON.stringify(info)}`)
-  })
-  network.on('writer-granted', (msg) => {
-    console.log(`[writer granted] ${JSON.stringify(msg)}`)
-  })
-  network.on('writer-error', (msg) => {
-    console.log(`[writer error] ${JSON.stringify(msg)}`)
-  })
-  network.on('flush-timeout', (info) => {
-    console.log(`[dht flush timeout] step=${info.step}`)
-  })
+  network.on('peer-join',     (info) => console.log(`[peer joined] ${JSON.stringify(info)}`))
+  network.on('writer-granted',(msg)  => console.log(`[writer granted] ${JSON.stringify(msg)}`))
+  network.on('writer-error',  (msg)  => console.log(`[writer error] ${JSON.stringify(msg)}`))
+  network.on('flush-timeout', (info) => console.log(`[dht flush timeout] step=${info.step}`))
 
-  await network.host(topicHex, {})
+  await network.host({})
 
   console.log('')
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-  console.log(`Site is live: ${formatHyperAddress(topicHex)}`)
+  console.log(`Site is live: ${formatHyperAddress(siteAddress)}`)
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
   console.log('')
   console.log('Share this address with visitors. They can open it in HyperBBS:')
-  console.log(`  node --experimental-ffi src/main.js ${formatHyperAddress(topicHex)} --data=<their-own-data-dir>`)
+  console.log(`  node --experimental-ffi src/main.js ${formatHyperAddress(siteAddress)} --data=<their-own-data-dir>`)
   console.log('')
   console.log('Press Ctrl+C to stop hosting.')
 
-  // Keep the process alive, announcing on the DHT
   process.on('SIGINT', async () => {
     console.log('\nShutting down...')
     await network.destroy()
@@ -121,7 +103,7 @@ async function main () {
     process.exit(0)
   })
 
-  await new Promise(() => {}) // block forever until SIGINT
+  await new Promise(() => {})
 }
 
 main().catch((err) => {

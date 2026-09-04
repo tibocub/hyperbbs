@@ -18,6 +18,7 @@ import { createCliRenderer } from '@opentui/core'
 import { createRequire } from 'node:module'
 import { BrowserShell } from './shell.js'
 import { parseHyperAddress } from './network.js'
+import { loadOrCreateDeviceKeyPair } from './identity.js'
 
 const require = createRequire(import.meta.url)
 
@@ -39,8 +40,14 @@ async function main () {
     try {
       const Corestore   = require('corestore')
       const { Hypergraph } = require('hypergraph')
+      // Persisted identity — see src/identity.js. Without this, every
+      // run of HyperBBS gets a new random identity even against the
+      // same --data= directory, which matters for the visitor's own
+      // authored writes (comments, posts) having a consistent author
+      // across sessions.
+      const deviceKeyPair = loadOrCreateDeviceKeyPair(dataPath)
       store = new Corestore(dataPath)
-      graph = new Hypergraph(store)
+      graph = new Hypergraph(store, { deviceKeyPair })
       await graph.ready()
       process.stderr.write(`[hyperbbs] opened graph at ${dataPath}\n`)
     } catch (e) {

@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "render": "node --experimental-ffi src/main.js",
-    "test": "npm run test:sandbox && npm run test:db && npm run test:network",
+    "test": "npm run test:sandbox && npm run test:db && npm run test:network && npm run test:identity",
     "test:sandbox": "brittle-node test/brittle/sandbox/resolver.js",
     "test:db": "brittle-node test/brittle/db/query-fetcher.js test/brittle/db/query-template.js",
-    "test:network": "brittle-node test/brittle/network/two-peers.js test/brittle/network/full-site-flow.js"
+    "test:network": "brittle-node test/brittle/network/two-peers.js test/brittle/network/full-site-flow.js test/brittle/network/delayed-content.js test/brittle/network/connect-isready.js",
+    "test:identity": "brittle-node test/brittle/identity.js"
   },
   "keywords": ["hyperbbs", "opentui", "terminal", "p2p", "hypermd"],
   "license": "ISC",
@@ -16,7 +17,8 @@
     "@opentui/core": "^0.4.2",
     "hypermd": ">=0.0.1",
     "corestore": "*",
-    "hyperswarm": "^4.0.0"
+    "hyperswarm": "^4.0.0",
+    "hypercore-crypto": "^3.7.0"
   },
   "devDependencies": {
     "brittle": "^4.0.0"

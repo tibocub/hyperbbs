@@ -1,3 +1,7 @@
 node_modules
 bun.lock
 
+
+# Local graph data directories (RocksDB storage) — per-machine runtime
+# state, not source. Created by --data= flags in main.js and host-site.js.
+*-data/

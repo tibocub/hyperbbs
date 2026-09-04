@@ -1,10 +1,15 @@
 /**
  * test/brittle/network/two-peers.js
  *
- * Tests HyperBBSNetwork with two local peers — owner hosting a site,
- * visitor connecting to it. Uses local Corestore replication (no real
- * DHT/internet) piped directly, matching hypergraph's own test pattern
- * for P2P scenarios.
+ * Tests HyperBBSNetwork's address format and bootstrap read/write.
+ *
+ * Address format: hyper://<ownerCoreKeyHex> — the address IS the
+ * owner's Hypergraph core public key, not an arbitrary topic. This was
+ * a deliberate design correction: an earlier version used a random
+ * topic, and empirical testing showed that a bare Hyperswarm connection
+ * causes ZERO data to flow until at least one side has explicitly
+ * opened a specific core by key. See network.js's file header for the
+ * full empirical writeup.
  *
  * Run: brittle-node test/brittle/network/two-peers.js
  */
@@ -16,98 +21,126 @@ import { createRequire } from 'node:module'
 import crypto from 'node:crypto'
 
 const require = createRequire(import.meta.url)
-const Hyperswarm = require('hyperswarm')
 
 test('parseHyperAddress: valid hyper:// address', t => {
-  const topic = crypto.randomBytes(32).toString('hex')
-  t.is(parseHyperAddress(`hyper://${topic}`), topic)
-  t.is(parseHyperAddress(`HYPER://${topic}`), topic, 'case insensitive')
+  const key = crypto.randomBytes(32).toString('hex')
+  t.is(parseHyperAddress(`hyper://${key}`), key)
+  t.is(parseHyperAddress(`HYPER://${key}`), key, 'case insensitive')
   t.is(parseHyperAddress(null), null, 'null returns null')
   t.is(parseHyperAddress('hyper://tooshort'), null, 'short key returns null')
   t.is(parseHyperAddress('notahyperaddress'), null, 'no protocol returns null')
 })
 
 test('formatHyperAddress: formats correctly', t => {
-  const topic = crypto.randomBytes(32).toString('hex')
-  t.is(formatHyperAddress(topic), `hyper://${topic}`)
+  const key = crypto.randomBytes(32).toString('hex')
+  t.is(formatHyperAddress(key), `hyper://${key}`)
 })
 
-test('network: owner can host a site and write a bootstrap', async t => {
-  t.plan(2)
+test('network: host() returns the graph\'s own core key as the site address', async t => {
+  t.plan(3)
   const { graph, store } = await createGraph(t, 'net-owner')
-  const topic = crypto.randomBytes(32).toString('hex')
 
   const network = new HyperBBSNetwork(graph, store, { role: 'owner' })
   t.teardown(() => network.destroy())
 
-  // We can't do a real swarm join in this sandbox (no DHT/internet),
-  // but we CAN test that host() writes the bootstrap to the graph
-  // and that the network instance is set up correctly.
-  // The actual two-peer replication test uses local pipe replication below.
-
-  // Write a bootstrap manually (what host() does internally)
+  // Write the bootstrap manually (what host() does internally) without
+  // actually joining a real swarm, since this sandbox has no DHT access.
   const { HypergraphNetwork } = require('hypergraph')
   const ctx = await graph.createContext()
+  const crypto2 = require('hypercore-crypto')
   const bootstrap = HypergraphNetwork.generateBootstrap(graph, {
-    topic,
+    topic: crypto2.discoveryKey(graph.key).toString('hex'),
     contexts: { content: ctx.toString('hex') }
   })
-
-  // Expose internal method for test access
   await network._writeBootstrap(bootstrap)
 
-  // Verify it can be read back
-  const recovered = await network._readBootstrap(topic)
+  const recovered = await network._readBootstrap()
   t.ok(recovered, 'bootstrap is stored and readable')
-  t.is(recovered.topic, topic, 'bootstrap topic matches')
+  t.is(recovered.ownerCore, graph.key.toString('hex'), 'bootstrap ownerCore matches graph.key')
+  t.ok(parseHyperAddress(formatHyperAddress(graph.key.toString('hex'))), 'graph.key round-trips through address format')
 })
 
-test('network: two peers replicate via local pipe (no DHT)', async t => {
-  t.plan(4)
+test('network: openUserCore-before-replicate is required for data to flow (regression test)', async t => {
+  t.plan(2)
 
-  const { graph: ownerGraph, store: ownerStore } = await createGraph(t, 'net-owner2')
-  const { graph: visitorGraph, store: visitorStore } = await createGraph(t, 'net-visitor')
+  // This test locks in the empirical finding that caused a real bug:
+  // a bare replication pipe between two stores transfers NOTHING
+  // unless the receiving side has opened the specific core by key
+  // first. Confirmed by comparing both cases directly.
+  const { graph: ownerGraph, store: ownerStore } = await createGraph(t, 'net-regr-owner')
+  const { graph: withoutOpen, store: storeA } = await createGraph(t, 'net-regr-a')
+  const { graph: withOpen, store: storeB } = await createGraph(t, 'net-regr-b')
 
-  const topic = crypto.randomBytes(32).toString('hex')
+  const post = await ownerGraph.put({ type: 'post' })
+  await ownerGraph.putContent(post.id, 'test content', 'text/plain')
+  const ownerKeyHex = ownerGraph.key.toString('hex')
 
-  // Owner creates a post and a bootstrap descriptor
+  // Case A: no openUserCore — should see nothing
+  const a1 = ownerStore.replicate(true, { live: true })
+  const a2 = storeA.replicate(false, { live: true })
+  a1.pipe(a2).pipe(a1)
+  t.teardown(() => { a1.destroy(); a2.destroy() })
+  await sleep(800)
+  await withoutOpen.update()
+  const postsA = await withoutOpen.query().type('post').toArray()
+  t.is(postsA.length, 0, 'WITHOUT openUserCore: zero posts replicate, confirming the bug is real')
+
+  // Case B: openUserCore first — should see the post
+  await withOpen.openUserCore(ownerKeyHex)
+  const b1 = ownerStore.replicate(true, { live: true })
+  const b2 = storeB.replicate(false, { live: true })
+  b1.pipe(b2).pipe(b1)
+  t.teardown(() => { b1.destroy(); b2.destroy() })
+  await sleep(800)
+  await withOpen.update()
+  const postsB = await withOpen.query().type('post').toArray()
+  t.is(postsB.length, 1, 'WITH openUserCore first: post replicates correctly')
+})
+
+test('network: visitor reads bootstrap after openUserCore + replicate', async t => {
+  t.plan(3)
+
+  const { graph: ownerGraph, store: ownerStore } = await createGraph(t, 'net-boot-owner')
+  const { graph: visitorGraph, store: visitorStore } = await createGraph(t, 'net-boot-visitor')
+
+  const { HypergraphNetwork } = require('hypergraph')
+  const crypto2 = require('hypercore-crypto')
+
   const post = await ownerGraph.put({ type: 'post' })
   await ownerGraph.putContent(post.id, 'Hello from the owner!', 'text/hypermd')
 
-  const { HypergraphNetwork } = require('hypergraph')
   const ownerNet = new HyperBBSNetwork(ownerGraph, ownerStore, { role: 'owner' })
   t.teardown(() => ownerNet.destroy())
 
   const ctx = await ownerGraph.createContext()
   const bootstrap = HypergraphNetwork.generateBootstrap(ownerGraph, {
-    topic,
+    topic: crypto2.discoveryKey(ownerGraph.key).toString('hex'),
     contexts: { content: ctx.toString('hex') }
   })
   await ownerNet._writeBootstrap(bootstrap)
 
-  // Critical: visitor must open the owner's core BEFORE replication starts
-  // so that Corestore knows which blocks to request. This is what
-  // connectFromBootstrap() does automatically via bootstrap.ownerCore.
-  await visitorGraph.openUserCore(bootstrap.ownerCore)
+  const ownerKeyHex = ownerGraph.key.toString('hex')
 
-  // Wire local pipe replication with live: true
+  // Exactly what HyperBBSNetwork.connect() does internally, minus the
+  // real swarm.join() (no DHT in this sandbox) — open the owner's core
+  // by key BEFORE replicating.
+  await visitorGraph.openUserCore(ownerKeyHex)
+
   const r1 = ownerStore.replicate(true, { live: true })
   const r2 = visitorStore.replicate(false, { live: true })
   r1.pipe(r2).pipe(r1)
   t.teardown(() => { r1.destroy(); r2.destroy() })
 
-  // Wait for replication to propagate
   await sleep(1000)
   await visitorGraph.update()
 
   const visitorNet = new HyperBBSNetwork(visitorGraph, visitorStore, { role: 'peer' })
   t.teardown(() => visitorNet.destroy())
 
-  const recoveredBootstrap = await visitorNet._readBootstrap(topic)
+  const recoveredBootstrap = await visitorNet._readBootstrap()
   t.ok(recoveredBootstrap, 'visitor can read bootstrap after replication')
-  t.is(recoveredBootstrap?.topic, topic, 'topic matches')
+  t.is(recoveredBootstrap?.ownerCore, ownerKeyHex, 'bootstrap ownerCore matches')
 
   const posts = await visitorGraph.query().type('post').toArray()
-  t.ok(posts.length > 0, 'visitor sees replicated posts')
-  t.ok(posts.some(p => p.id === post.id), 'visitor sees the specific post')
+  t.ok(posts.some(p => p.id === post.id), 'visitor sees the owner\'s post')
 })
