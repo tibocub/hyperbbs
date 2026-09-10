@@ -18,20 +18,31 @@
  *   graph.put({ type })
  *     → { id: "${type}/${authorHex}/${seq}", type, author }
  *     NOTE: id and author are NOT passed in — both are auto-assigned.
- *     The README examples showing `graph.put({ id, author })` are wrong.
+ *     Passing an id now throws ('Entity id must NOT be provided').
  *
  *   graph.query().type(t).toArray()
  *     → [{ id, type, author, createdAt, deleted, version }]
  *
  *   graph.getContent(id)
- *     → { entityId, contentType, body, createdAt, encrypted, scope, epoch, nonce }
- *     encrypted:true means the content is inaccessible without a scope key.
+ *     → UNENCRYPTED: { entityId, contentType, body, createdAt, encrypted, scope, epoch, nonce }
+ *       ENCRYPTED:   { contentType, body, encrypted: true, scope, epoch }
+ *                    (narrower — no entityId, no createdAt, no nonce)
+ *       → null if the entity has no content record. It does NOT throw.
+ *     `encrypted: true` means "was stored encrypted", NOT "you can't read it" —
+ *     hypergraph returns encrypted:true together with the decrypted plaintext when
+ *     we hold the scope key. Test `body === null` for inaccessible content.
  *
  *   graph.getByTag(tag)
  *     → [{ id, type, author, createdAt, deleted, version, tag }]
  *
  *   graph.edges(id, { type, direction: 'in'|'out' })
  *     → [{ from, to, type, author, createdAt, deleted }]
+ *
+ * CONTEXT RULE (hypergraph src/utils.js resolveOpenContexts): once MORE THAN ONE
+ * context is open on a graph instance, any context-scoped read that passes neither
+ * { context } nor { allContexts: true } THROWS. The reads in this file
+ * (graph.edges, graph.getByTag) deliberately pass no context, so this file must
+ * never open more than one. See getWriteContext() below.
  */
 
 /**
@@ -114,13 +125,20 @@ async function assembleItem(graph, entity) {
   let content = null
   try {
     const raw = await graph.getContent(entity.id)
-    if (raw && !raw.encrypted) {
+    // Discriminate on `body`, NOT on `encrypted`. hypergraph returns
+    // `encrypted: true` on every record that was STORED encrypted — including
+    // ones it just successfully decrypted for us (src/hypergraph.js getContent()
+    // returns `{ body: <plaintext>, encrypted: true }` when we hold the scope key).
+    // `body === null` is the real "you can't read this" signal. Keying off
+    // `encrypted` rendered [encrypted] over content we could actually read.
+    if (raw && raw.body !== null && raw.body !== undefined) {
       content = { body: raw.body, contentType: raw.contentType }
-    } else if (raw?.encrypted) {
+    } else if (raw) {
       content = { body: '[encrypted]', contentType: raw.contentType }
     }
   } catch {
-    // getContent() throws if entity has no content — treat as null
+    // Defensive only — getContent() returns null for a missing content record,
+    // it does not throw.
   }
 
   return {
@@ -145,6 +163,25 @@ async function assembleItem(graph, entity) {
  */
 export function createSandboxDbCallbacks(graph) {
   const fetcher = createQueryFetcher(graph)
+
+  // ONE context, shared by every sandbox write, created lazily on first use.
+  //
+  // This used to be `await graph.createContext()` inline at each write site. That was
+  // wrong twice over: (1) hypergraph's resolveOpenContexts() (src/utils.js) THROWS once
+  // more than one context is open on a graph instance and a context-scoped read doesn't
+  // say which one — so the second sandbox relation/tag write permanently broke every
+  // subsequent :::query{tag=...} and relation traversal, which pass no { context };
+  // and (2) each write landed in its own throwaway context, so the tag/edge it wrote was
+  // invisible to reads anyway. Memoizing keeps contexts.size at 1 and makes writes
+  // mutually visible. Do not move this back inside a write.
+  let sharedContext = null
+  let sharedContextPromise = null
+  async function getWriteContext() {
+    if (sharedContext) return sharedContext
+    if (!sharedContextPromise) sharedContextPromise = graph.createContext()
+    sharedContext = await sharedContextPromise
+    return sharedContext
+  }
 
   return {
     async onDbQuery(msg, respond) {
@@ -188,7 +225,7 @@ export function createSandboxDbCallbacks(graph) {
             break
 
           case 'relation': {
-            const ctx = await graph.createContext()
+            const ctx = await getWriteContext()
             await graph.relate({
               from: d.from,
               to: d.to,
@@ -200,7 +237,7 @@ export function createSandboxDbCallbacks(graph) {
           }
 
           case 'tag': {
-            const ctx = await graph.createContext()
+            const ctx = await getWriteContext()
             await graph.tag(d.entityId, d.tag, { context: ctx })
             result = { ok: true }
             break
