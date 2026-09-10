@@ -70,10 +70,10 @@ All hypersite data is expressed through four generic primitives. There are no ap
 ### Primitives
 
 ```
-Entity    { id, type, author, createdAt }       — any object; immutable once created
-Content   { entityId, contentType, body }        — attached data; append-only, versioning via multiple entries
-Relation  { from, to, type, createdAt }          — edges between entities; append-only, no cascading deletes
-Tag       { entityId, tag }                      — flat string labels for grouping and indexing
+Entity    { id, type, author, createdAt }      — any object; immutable once created
+Content   { entityId, contentType, body }      — attached data; append-only, versioning via multiple entries
+Relation  { from, to, type, createdAt }        — edges between entities; append-only, no cascading deletes
+Tag       { entityId, tag }                    — flat string labels for grouping and indexing
 ```
 
 These four are enough to express blogs, forums, chatrooms, reactions, mentions, and threads — all as queries and relations over the same graph, without adding new abstractions.
@@ -270,21 +270,33 @@ TUI-specific (OpenTUI imports, would need a parallel web implementation):
 
 ## Status
 
+*Last verified against the test suite on 2026-09-10. If you change this list, run `npm test`
+first — this section was badly stale once (it claimed the data layer was unbuilt long after it
+shipped) and that cost real time.*
+
+**The one thing actually blocking us right now:** a visitor replicates a site's HyperMD
+successfully but **fails to render it** (see commit `81721a2`). Everything upstream of rendering
+is verified working by tests — replication, content fetch, query resolution. The unverified step
+is OpenTUI mounting; see the INVESTIGATION NOTE above `_mountDoc` in `src/shell.js`.
+
 - [WIP] [HyperMD](https://github.com/tibocub/HyperMD) parser
-- [WIP] [HyperDNS](https://github.com/tibocub/HyperDNS) integration
+- [ ] [HyperDNS](https://github.com/tibocub/HyperDNS) integration — not started; sites are
+      addressed by raw pubkey today
 - [WIP] HyperDOM reactive tree
-- [ ] `:::query` / `:::template` resolver (like hugo sites rendered client-side)
-- [WIP] OpenTUI reconciler
+- [x] `:::query` / `:::template` resolver (like hugo sites rendered client-side) —
+      covered by `test/brittle/sandbox/resolver.js` and `test/brittle/db/query-template.js`
+- [WIP] OpenTUI reconciler — **the current suspect for the render failure above**
 - [WIP] Script sandbox (Worker + vm)
     - [x] hypersite.getElementById(id) — get a handle to any named element
     - [x] .on('press', fn) — register a button press handler (or 'change' for selects)
     - [x] .setText(string) — update a text node's content live
     - [x] .setData([...strings]) — replace a container's content with a list of text rows, correctly cleaning up previous dynamic children without touching static ones
     - [x] .clear() — clear an input field
-    - [ ] db.query().match().in().exec() — async query (stubbed, returns [] until Hypergraph is wired)
-    - [ ] db.put() / db.get() — async writes/reads (also stubbed)
+    - [x] db.query() — async query, wired to Hypergraph in `src/db.js` (no longer stubbed)
+    - [x] db.put() / db.get() — async writes/reads, wired to Hypergraph
+          (`test/brittle/db/sandbox-writes.js`)
     - [ ] console.log/warn/error — relayed to stderr without corrupting the TUI
-- [ ] `db` primitive API
+- [x] `db` primitive API — `src/db.js`, covered by `test/brittle/db/`
 - [ ] TUI Browser shell
     - [x] scroll bar
     - [ ] address bar
@@ -292,7 +304,22 @@ TUI-specific (OpenTUI imports, would need a parallel web implementation):
     - [ ] menu and config menu
     - [ ] bookmarks
     - [ ] ID manager (like web browser's password manager but with keypairs)
-- [ ] P2P replication via Hypergraph + Hyperswarm
+- [x] P2P replication via Hypergraph + Hyperswarm — owner hosts, visitor replicates and reads
+      content across a real swarm (`test/brittle/network/`, 4 suites). Note: `openUserCore()`
+      before replicating is the application's job and is easy to forget in one direction —
+      there's a dedicated regression test for exactly that.
+
+## Running it
+
+```bash
+npm install          # Node >= 26.4.0, npm (NOT bun — see CLAUDE.md)
+npm run render       # launch the browser
+npm test             # sandbox + db + network + identity suites
+```
+
+Useful probes in `bin/` for debugging across the hypergraph boundary:
+`diagnose-network.js`, `host-site.js`, `inspect-graph.js`, `scratch-owner.js`,
+`scratch-visitor.js`.
 
 ---
 

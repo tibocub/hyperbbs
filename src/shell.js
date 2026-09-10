@@ -424,6 +424,17 @@ export class BrowserShell {
 
   // ─── Document mounting ─────────────────────────────────────────────────────
 
+  // INVESTIGATION NOTE (2026-09-09): everything upstream of this call —
+  // replication, parse(), resolveQueries(), applyStyles() — is now confirmed
+  // working, twice: once via test/brittle/network/full-site-flow.js (local
+  // pipe), and once via a throwaway probe exercising the real HyperBBSNetwork
+  // class (src/network.js) over an actual DHT connection end-to-end. Neither
+  // reaches this method — no brittle test or headless probe can, since it
+  // needs a real @opentui/core renderer/TTY. If "replicates but visitor can't
+  // render" recurs, this method (and Reconciler.mountDocument()) is the one
+  // remaining unverified step in the pipeline — instrument mountDocument()
+  // itself next, and rule out createCliRenderer() hanging with no real TTY
+  // as a separate, more mundane explanation before assuming a mounting bug.
   _mountDoc(doc) {
     this._clearViewport()
     this._clearConsole()
